@@ -7,7 +7,8 @@
     "dev:api": "pnpm --filter @bss/api dev",
     "build": "pnpm --filter @bss/web build",
     "pipeline:setup": "pnpm --filter @bss/pipeline migrate",
-    "pipeline:run": "pnpm --filter @bss/pipeline run-all"
+    "pipeline:run": "pnpm --filter @bss/pipeline run-all",
+    "pipeline:csv": "pnpm --filter @bss/pipeline process-csvs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

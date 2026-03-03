@@ -11,7 +11,8 @@
     "compute:summary": "node scripts/compute_stop_summary.js",
     "refresh:links": "node scripts/refresh_stop_links.js",
     "run-all": "node scripts/run_all.js",
-    "export:static": "node scripts/export_static.js"
+    "export:static": "node scripts/export_static.js",
+    "process-csvs": "node scripts/process-csvs.js"
   },
   "dependencies": {
     "csv-parse": "^5.6.0",

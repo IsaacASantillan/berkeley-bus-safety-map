@@ -1,120 +1,87 @@
 /**
  * ingest_calls_for_service.js
  *
- * Downloads Berkeley PD Calls for Service from the Socrata Open Data API
- * and ingests records into the incidents table.
+ * Downloads Berkeley PD Calls for Service from the Berkeley PD ArcGIS
+ * FeatureServer (2019–present, updated daily) and ingests records into
+ * the incidents table.
  *
- * Dataset: https://data.cityofberkeley.info/Public-Safety/Calls-for-Service-2023-2024/k2nh-s5h5
- * Override dataset ID via: BERKELEY_CFS_DATASET_ID env var
+ * Service: Calls For Service Complete Public
+ * https://services7.arcgis.com/vIHhVXjE1ToSg0Fz/arcgis/rest/services/Calls_For_Service_Complete_Public/FeatureServer/0
  *
- * Records without coordinates are geocoded via Nominatim (rate-limited + cached).
+ * Field mapping:
+ *   Incident_Number  → incident_id
+ *   Call_Type        → category
+ *   CreateDatetime   → occurred_at  (Unix ms)
+ *   extra_str_1      → address      (block-level)
+ *   lat / lon        → geom         (no geocoding needed)
  */
 import 'dotenv/config';
 import { getPool, closePool } from './db.js';
 
-const DATASET_ID = process.env.BERKELEY_CFS_DATASET_ID || 'k2nh-s5h5';
-const SOCRATA_BASE = 'https://data.cityofberkeley.info/resource';
+const ARCGIS_URL =
+  'https://services7.arcgis.com/vIHhVXjE1ToSg0Fz/arcgis/rest/services' +
+  '/Calls_For_Service_Complete_Public/FeatureServer/0/query';
+
+// Berkeley city bounding box (south, west, north, east)
+const BBOX_WHERE =
+  "lat BETWEEN 37.84 AND 37.91 AND lon BETWEEN -122.32 AND -122.22";
+
 const PAGE_SIZE = 1000;
 
-const GEOCODE_DELAY_MS = 1100; // Nominatim: max 1 req/sec
-const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+async function fetchPage(offset) {
+  const params = new URLSearchParams({
+    where: BBOX_WHERE,
+    outFields: 'Incident_Number,Call_Type,CreateDatetime,lat,lon,extra_str_1',
+    f: 'json',
+    resultOffset: String(offset),
+    resultRecordCount: String(PAGE_SIZE),
+    orderByFields: 'ObjectId',
+  });
 
-async function geocodeAddress(pool, address) {
-  // Check cache first
-  const cached = await pool.query(
-    'SELECT lat, lon, success FROM geocode_cache WHERE address = $1',
-    [address]
-  );
-  if (cached.rows.length > 0) {
-    const r = cached.rows[0];
-    return r.success ? { lat: r.lat, lon: r.lon } : null;
-  }
+  const res = await fetch(`${ARCGIS_URL}?${params}`, {
+    headers: { 'User-Agent': 'BerkeleyBusSafetyMap/1.0' },
+  });
+  if (!res.ok) throw new Error(`ArcGIS returned ${res.status}`);
 
-  await new Promise(r => setTimeout(r, GEOCODE_DELAY_MS));
+  const data = await res.json();
+  if (data.error) throw new Error(`ArcGIS error: ${data.error.message}`);
 
-  try {
-    const url = `${NOMINATIM_URL}?q=${encodeURIComponent(address + ', Berkeley, CA')}&format=json&limit=1`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'BerkeleyBusSafetyMap/1.0 (contact@example.com)' },
-    });
-    const data = await res.json();
-
-    if (data.length > 0) {
-      const { lat, lon } = data[0];
-      await pool.query(
-        `INSERT INTO geocode_cache (address, lat, lon, success) VALUES ($1, $2, $3, true)
-         ON CONFLICT (address) DO UPDATE SET lat=$2, lon=$3, success=true`,
-        [address, parseFloat(lat), parseFloat(lon)]
-      );
-      return { lat: parseFloat(lat), lon: parseFloat(lon) };
-    }
-  } catch (_) {}
-
-  await pool.query(
-    `INSERT INTO geocode_cache (address, success) VALUES ($1, false)
-     ON CONFLICT (address) DO UPDATE SET success=false`,
-    [address]
-  );
-  return null;
+  return {
+    features: data.features ?? [],
+    hasMore: data.exceededTransferLimit === true,
+  };
 }
 
 async function run() {
   const pool = getPool();
+
+  console.log('Clearing existing Berkeley PD incidents…');
+  await pool.query(`DELETE FROM incidents WHERE source = 'Berkeley PD'`);
+
   let offset = 0;
   let totalInserted = 0;
-  let totalGeocoded = 0;
   let totalSkipped = 0;
 
-  console.log(`Ingesting calls for service (dataset: ${DATASET_ID})…`);
+  console.log('Ingesting calls for service from Berkeley PD ArcGIS (2019–present)…');
 
   while (true) {
-    const url = `${SOCRATA_BASE}/${DATASET_ID}.json?$limit=${PAGE_SIZE}&$offset=${offset}&$order=:id`;
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/json' },
-    });
+    const { features, hasMore } = await fetchPage(offset);
+    if (features.length === 0) break;
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} fetching CFS data: ${await res.text()}`);
-    }
+    for (const f of features) {
+      const a = f.attributes;
+      const incidentId = a.Incident_Number?.trim();
+      if (!incidentId) continue;
 
-    const records = await res.json();
-    if (records.length === 0) break;
+      const category   = a.Call_Type   ?? null;
+      const occurredAt = a.CreateDatetime != null
+        ? new Date(a.CreateDatetime).toISOString()
+        : null;
+      const address    = a.extra_str_1  ?? null;
+      const lat        = a.lat;
+      const lon        = a.lon;
 
-    for (const r of records) {
-      // Field names specific to Berkeley CFS dataset (k2nh-s5h5)
-      const incidentId = r.caseno || r.incident_number || r.case_number || r.objectid?.toString() || `cfs-${offset}-${Math.random()}`;
-      const category = r.cvlegend || r.offense || r.offense_description || r.call_type || null;
-      const occurredAt = r.eventdt || r.incident_datetime || r.event_date || null;
-      const address = r.blkaddr || r.incident_address || r.address || null;
-
-      // Try to get coordinates — Berkeley dataset nests them in block_location object
-      let lat = null;
-      let lon = null;
-
-      if (r.block_location?.latitude && r.block_location?.longitude) {
-        lat = parseFloat(r.block_location.latitude);
-        lon = parseFloat(r.block_location.longitude);
-      } else if (r.latitude && r.longitude) {
-        lat = parseFloat(r.latitude);
-        lon = parseFloat(r.longitude);
-      } else if (r.location?.coordinates) {
-        [lon, lat] = r.location.coordinates;
-      } else if (r.block_location_lat && r.block_location_long) {
-        lat = parseFloat(r.block_location_lat);
-        lon = parseFloat(r.block_location_long);
-      }
-
-      // Geocode if no coords
-      if ((lat === null || lon === null) && address) {
-        const coords = await geocodeAddress(pool, address);
-        if (coords) {
-          lat = coords.lat;
-          lon = coords.lon;
-          totalGeocoded++;
-        }
-      }
-
-      const geomSql = (lat !== null && lon !== null)
+      const geomSql = (lat != null && lon != null)
         ? `ST_SetSRID(ST_MakePoint(${lon}, ${lat}), 4326)`
         : 'NULL';
 
@@ -124,7 +91,7 @@ async function run() {
              (incident_id, incident_type, category, occurred_at, address, source, geom)
            VALUES ($1, 'CALLS_FOR_SERVICE', $2, $3, $4, 'Berkeley PD', ${geomSql})
            ON CONFLICT DO NOTHING`,
-          [incidentId, category, occurredAt || null, address]
+          [incidentId, category, occurredAt, address]
         );
         totalInserted++;
       } catch (err) {
@@ -133,13 +100,13 @@ async function run() {
       }
     }
 
-    console.log(`  Page offset=${offset}: processed ${records.length} records`);
-    offset += PAGE_SIZE;
+    console.log(`  Offset ${offset}: ${features.length} records (inserted so far: ${totalInserted})`);
+    offset += features.length;
 
-    if (records.length < PAGE_SIZE) break;
+    if (!hasMore) break;
   }
 
-  console.log(`\nDone. Inserted: ${totalInserted}, geocoded: ${totalGeocoded}, skipped: ${totalSkipped}`);
+  console.log(`\nDone. Inserted: ${totalInserted}, skipped: ${totalSkipped}`);
   await closePool();
 }
 

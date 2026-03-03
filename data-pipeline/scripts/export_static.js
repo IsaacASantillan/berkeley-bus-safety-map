@@ -18,6 +18,7 @@ import { getPool, closePool } from './db.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(__dirname, '..', '..', 'apps', 'web', 'public', 'data');
 const RADIUS_M = parseInt(process.env.INCIDENT_RADIUS_METERS || '50', 10);
+const MAX_INCIDENTS_PER_STOP = parseInt(process.env.MAX_INCIDENTS_PER_STOP || '25', 10);
 
 function write(filename, data) {
   const path = join(OUT_DIR, filename);
@@ -66,24 +67,34 @@ async function run() {
   // ── 3. Stop details (incidents + links per stop) ─────────────────────────────
   console.log(`Exporting stop details (incidents within ${RADIUS_M} m)…`);
 
-  // Fetch all relevant incidents at once with a spatial join
+  // Fetch the N most recent incidents per stop using a spatial join + window function
+  console.log(`  (capping at ${MAX_INCIDENTS_PER_STOP} most recent per stop)`);
   const { rows: allIncidents } = await pool.query(`
-    SELECT
-      s.stop_id,
-      i.incident_id,
-      i.incident_type,
-      i.category,
-      i.occurred_at,
-      i.address,
-      i.source,
-      i.source_url
-    FROM stops s
-    JOIN incidents i
-      ON i.geom IS NOT NULL
-     AND ST_DWithin(s.geom::geography, i.geom::geography, $1)
-    WHERE s.in_city = true
-    ORDER BY s.stop_id, i.occurred_at DESC NULLS LAST
-  `, [RADIUS_M]);
+    SELECT stop_id, incident_id, incident_type, category,
+           occurred_at, address, source, source_url
+    FROM (
+      SELECT
+        s.stop_id,
+        i.incident_id,
+        i.incident_type,
+        i.category,
+        i.occurred_at,
+        i.address,
+        i.source,
+        i.source_url,
+        ROW_NUMBER() OVER (
+          PARTITION BY s.stop_id
+          ORDER BY i.occurred_at DESC NULLS LAST
+        ) AS rn
+      FROM stops s
+      JOIN incidents i
+        ON i.geom IS NOT NULL
+       AND ST_DWithin(s.geom::geography, i.geom::geography, $1)
+      WHERE s.in_city = true
+    ) ranked
+    WHERE rn <= $2
+    ORDER BY stop_id, occurred_at DESC NULLS LAST
+  `, [RADIUS_M, MAX_INCIDENTS_PER_STOP]);
 
   // Fetch all links
   const { rows: allLinks } = await pool.query(`

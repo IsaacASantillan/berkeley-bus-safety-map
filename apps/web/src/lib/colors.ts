@@ -1,4 +1,4 @@
-import type { SeverityColor } from '@bss/shared';
+import type { SeverityColor } from '../types/index.js';
 
 export const SEVERITY_HEX: Record<SeverityColor, string> = {
   RED:    '#EF4444',

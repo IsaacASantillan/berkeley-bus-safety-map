@@ -1,0 +1,1 @@
+{"generated_at":"2026-03-03T20:42:24.550Z","processing_time_ms":309,"radius_miles":0.05,"k_clusters":6,"stops":{"total_in_csv":606,"loaded":604,"dropped_no_coords":0},"collisions":{"total_in_csv":15998,"loaded":15997,"dropped_no_coords":1,"note":"x/y converted from EPSG:3857 (Web Mercator) to WGS84."}}

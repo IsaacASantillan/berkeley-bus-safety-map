@@ -40,7 +40,7 @@ jobs:
         run: pnpm --filter @bss/web build
         env:
           VITE_STATIC_MODE: 'true'
-          VITE_BASE_PATH: '/${{ github.event.repository.name }}/'
+          VITE_BASE_PATH: '/berkeley-bus-safety-map/'
 
       - uses: actions/upload-pages-artifact@v3
         with:

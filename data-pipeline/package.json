@@ -1,0 +1,21 @@
+{
+  "name": "@bss/pipeline",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "migrate": "node scripts/run_migrations.js",
+    "ingest:boundary": "node scripts/ingest_boundary.js",
+    "ingest:stops": "node scripts/ingest_gtfs_stops.js",
+    "ingest:crimes": "node scripts/ingest_calls_for_service.js",
+    "compute:summary": "node scripts/compute_stop_summary.js",
+    "refresh:links": "node scripts/refresh_stop_links.js",
+    "run-all": "node scripts/run_all.js"
+  },
+  "dependencies": {
+    "csv-parse": "^5.6.0",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.3",
+    "yauzl": "^3.2.0"
+  }
+}

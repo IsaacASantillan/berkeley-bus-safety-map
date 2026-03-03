@@ -10,7 +10,8 @@
     "ingest:crimes": "node scripts/ingest_calls_for_service.js",
     "compute:summary": "node scripts/compute_stop_summary.js",
     "refresh:links": "node scripts/refresh_stop_links.js",
-    "run-all": "node scripts/run_all.js"
+    "run-all": "node scripts/run_all.js",
+    "export:static": "node scripts/export_static.js"
   },
   "dependencies": {
     "csv-parse": "^5.6.0",
